@@ -18,7 +18,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="호신용 그립톡"
+            android:text="PROTECTOK"
             android:textAlignment="center"
             android:textSize="26dp" />
 
@@ -68,13 +68,35 @@
                 android:text="블루투스 활성" />
 
             <Button
-                android:id="@+id/btn_find_bluetooth"
+                android:id="@+id/btn_scan_bluetooth"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="블루투스 찾기" />
+                android:text="블루투스 탐색"
+                android:enabled="false"/>
         </LinearLayout>
 
+        <Button
+            android:id="@+id/btn_connect_bluetooth"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="블루투스 연결" />
+
+        <TextView
+            android:id="@+id/text_data"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="-1"
+            android:textAlignment="center"
+            android:textSize="26dp" />
+
     </LinearLayout>
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/view_bluetooth_list"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
 </LinearLayout>
