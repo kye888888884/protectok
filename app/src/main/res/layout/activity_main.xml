@@ -76,13 +76,6 @@
                 android:enabled="false"/>
         </LinearLayout>
 
-        <Button
-            android:id="@+id/btn_connect_bluetooth"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="블루투스 연결" />
-
         <TextView
             android:id="@+id/text_data"
             android:layout_width="match_parent"

@@ -1,51 +1,36 @@
 package com.example.protectok
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanResult
 import android.content.BroadcastReceiver
-import android.content.ContentValues.TAG
 import android.content.Context
-import android.content.ContextWrapper
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.media.metrics.Event
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.util.Log
 import android.view.LayoutInflater
-import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
-import androidx.annotation.RequiresApi
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.app.ActivityCompat
-import androidx.core.app.ActivityCompat.startActivityForResult
 import androidx.lifecycle.MutableLiveData
-import androidx.media3.common.util.Util
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.example.protectok.ui.theme.ProtectokTheme
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.io.UnsupportedEncodingException
+import java.lang.reflect.Method
+import java.nio.charset.Charset
 import java.util.UUID
+import kotlin.concurrent.thread
 
 const val REQUEST_ALL_PERMISSION = 1
 val PERMISSIONS = arrayOf(
@@ -60,9 +45,6 @@ val PERMISSIONS = arrayOf(
 )
 var foundDevice:Boolean = false
 private var mBluetoothStateReceiver: BroadcastReceiver? = null
-var mBluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
-
-
 
 private var connected: MutableLiveData<Boolean> = MutableLiveData(false)
 //private var connectError: MutableLiveData<Event> = MutableLiveData(Event(false))
@@ -70,9 +52,11 @@ private var putTxt: MutableLiveData<String> = MutableLiveData("")
 private var bleSocket: BluetoothSocket? = null
 private var thread: Thread? = null
 
+private val MY_UUID = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb")
+
 class MainActivity : ComponentActivity() {
-    lateinit var context_main: Context;
-    var mBluetoothAdapter: BluetoothAdapter? = null
+    lateinit var context_main: Context
+    var bluetoothAdapter: BluetoothAdapter? = null
 
     private var devicesArr = ArrayList<BluetoothDevice>()
     private val REQUEST_ENABLE_BT = 1
@@ -81,6 +65,18 @@ class MainActivity : ComponentActivity() {
     private lateinit var recyclerViewAdapter: RecyclerViewAdapter
 
     var text_data: TextView? = null
+
+    private var btSocket: BluetoothSocket? = null
+    private var btDevice: BluetoothDevice? = null
+
+    private var outputStream: OutputStream? = null
+    private var inputStream: InputStream? = null
+    private var workerThread: Thread? = null
+
+    private var readBuffer: ByteArray? = null
+    private var readBufferPosition: Int = 0
+
+    private var onBT: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -95,7 +91,7 @@ class MainActivity : ComponentActivity() {
         val text_tel = findViewById<TextView>(R.id.text_tel)
         val btn_tel = findViewById<Button>(R.id.btn_tel)
         val btn_active = findViewById<Button>(R.id.btn_active_bluetooth)
-        val btn_connect = findViewById<Button>(R.id.btn_connect_bluetooth)
+        val btn_scan = findViewById<Button>(R.id.btn_scan_bluetooth)
         text_data = findViewById(R.id.text_data)
 
         viewManager = LinearLayoutManager(this)
@@ -114,11 +110,11 @@ class MainActivity : ComponentActivity() {
         }
 
         btn_active.setOnClickListener {
-            mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
-            if (mBluetoothAdapter == null) {
+            bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
+            if (bluetoothAdapter == null) {
                 Toast.makeText(this, "블루투스를 지원하지 않는 기기입니다", Toast.LENGTH_SHORT).show()
             } else {
-                if (!mBluetoothAdapter!!.isEnabled) {
+                if (!bluetoothAdapter!!.isEnabled) {
                     val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
                     if (ActivityCompat.checkSelfPermission(
                             this,
@@ -135,7 +131,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        btn_connect.setOnClickListener {
+        btn_scan.setOnClickListener {
             getPairedDevices()
             recyclerViewAdapter.notifyDataSetChanged()
         }
@@ -148,8 +144,8 @@ class MainActivity : ComponentActivity() {
 
     private fun setBluetoothFindButton() {
         val scanBtn: Button = findViewById(R.id.btn_scan_bluetooth)
-        if (mBluetoothAdapter != null) {
-            scanBtn.isEnabled = mBluetoothAdapter!!.isEnabled != false
+        if (bluetoothAdapter != null) {
+            scanBtn.isEnabled = bluetoothAdapter!!.isEnabled != false
         }
     }
 
@@ -184,7 +180,7 @@ class MainActivity : ComponentActivity() {
     }
 
     fun getPairedDevices() {
-        mBluetoothAdapter?.let {
+        bluetoothAdapter?.let {
             // 블루투스 활성화 상태라면
             if (it.isEnabled) {
                 if (ActivityCompat.checkSelfPermission(
@@ -213,65 +209,33 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // 블루투스에서 서버의 역할을 수행하는 스레드
-    class AcceptThread(private val bluetoothAdapter: BluetoothAdapter, context: Context): Thread() {
-        private lateinit var serverSocket: BluetoothServerSocket
-
-        companion object {
-            private const val TAG = "ACCEPT_THREAD"
-            private const val SOCKET_NAME = "server"
-            private val MY_UUID = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb")
-        }
-
-        init {
+    private fun createBluetoothSocket(device: BluetoothDevice): BluetoothSocket {
+        if (Build.VERSION.SDK_INT >= 10) {
             try {
-                // 서버 소켓
-                if (ActivityCompat.checkSelfPermission(
-                        context,
-                        Manifest.permission.BLUETOOTH_CONNECT
-                    ) != PackageManager.PERMISSION_GRANTED
-                ) {
-
-                }
-                serverSocket = bluetoothAdapter.listenUsingRfcommWithServiceRecord(SOCKET_NAME, MY_UUID)
-            } catch(e: Exception) {
-                Log.d(TAG, e.message.toString())
+                val m: Method = device.javaClass.getMethod(
+                    "createRfcommSocketToServiceRecord",
+                    UUID::class.java
+                )
+                return m.invoke(device, MY_UUID) as BluetoothSocket
+            } catch (e: Exception) {
+                Log.e("Bluetooth", "Could not create Insecure RFComm Connection", e)
             }
         }
-
-        override fun run() {
-            var socket: BluetoothSocket? = null
-            while(true) {
-                try {
-                    // 클라이언트 소켓
-                    socket = serverSocket.accept()
-                } catch (e: IOException) {
-                    Log.d(TAG, e.message.toString())
-                }
-
-                socket?.let {
-                    /* 클라이언트 소켓과 관련된 작업..... */
-
-                    // 더 이상 연결을 수행하지 않는다면 서버 소켓 종료(그래도 연결된 소켓은 작동)
-                    serverSocket.close()
-                }
-                break
-            }
+        if (ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
         }
-
-        fun cancel() {
-            try {
-                serverSocket.close()
-            } catch (e: IOException) {
-                Log.d(TAG, e.message.toString())
-            }
-        }
+        Log.d("Bluetooth", "Could not create Insecure RFComm Connection")
+        return device.createRfcommSocketToServiceRecord(MY_UUID)
     }
 
     // 디바이스에 연결
     public fun connectDevice(deviceAddress: String) {
-        mBluetoothAdapter?.let { adapter ->
-            // 기기 검색을 수행중이라면 취소
+        bluetoothAdapter?.let { adapter ->
+            showMessage(this, deviceAddress)
+            // 기기 검색을 수행 중이라면 취소
             if (ActivityCompat.checkSelfPermission(
                     this,
                     Manifest.permission.BLUETOOTH_SCAN
@@ -284,61 +248,104 @@ class MainActivity : ComponentActivity() {
             }
 
             // 서버의 역할을 수행 할 Device 획득
-            val device = adapter.getRemoteDevice(deviceAddress)
-            // UUID 선언
-            val uuid = UUID.fromString("00001101-0000-1000-8000-008052ba94fb")
+            btDevice = null
+            for (tempDevice: BluetoothDevice in devicesArr) {
+                if (tempDevice.address == deviceAddress) {
+                    btDevice = tempDevice
+                    break
+                }
+            }
+
+            // 디바이스가 없으면 종료
+            if (btDevice == null) {
+                showMessage(this, "디바이스를 찾을 수 없습니다.")
+                return
+            }
+
+            Log.d("Bluetooth", "Tried connecting to " + btDevice.toString())
+
             try {
-                val thread = ConnectThread(uuid, device, this)
-                thread.run()
-                showMessage(this, "${device.name}과 연결되었습니다.")
+                // 소켓 생성
+                btSocket = createBluetoothSocket(btDevice!!)
+                btSocket!!.connect()
+                Log.d("Bluetooth", btSocket.toString())
+
+                // 데이터 송수신 스트림 획득
+                outputStream = btSocket!!.outputStream
+                inputStream = btSocket!!.inputStream
+                receiveData()
+
+                onBT = true
             } catch (e: Exception) { // 연결에 실패할 경우 호출됨
                 showMessage(this, e.toString())
-//                showMessage(this, "기기의 전원이 꺼져 있습니다. 기기를 확인해주세요.")
+                Log.d("Bluetooth", e.toString())
                 return
             }
         }
     }
 
+    // 데이터 수신
+    public fun receiveData() {
+        val handler = Handler()
 
-}
+        // 데이터를 수신하기 위한 버퍼를 생성
+        readBufferPosition = 0
+        readBuffer = ByteArray(1024)
 
-@SuppressLint("MissingPermission")
-class ConnectThread(
-    private val myUUID: UUID,
-    private val device: BluetoothDevice,
-    private val context: MainActivity
-) : Thread() {
-    companion object {
-        private const val TAG = "CONNECT_THREAD"
-    }
-
-    // BluetoothDevice 로부터 BluetoothSocket 획득
-    private val connectSocket: BluetoothSocket? by lazy(LazyThreadSafetyMode.NONE) {
-        device.createRfcommSocketToServiceRecord(myUUID)
-    }
-
-    override fun run() {
-        try {
-            // 연결 수행
-            connectSocket?.connect()
-            connectSocket?.let {
-                val connectedThread = ConnectedThread(bluetoothSocket = it, context.text_data)
-                connectedThread.start()
+        // 데이터를 수신하기 위한 쓰레드 생성
+        workerThread = thread(false) {
+            Log.d("Thread", "Thread Created")
+            while (!Thread.currentThread().isInterrupted) {
+                try {
+                    // 수신된 데이터가 있는지 확인
+                    var byteAvailable: Int = inputStream!!.available()
+                    // 데이터가 수신된 경우
+                    if (byteAvailable > 0) {
+                        var bytes: ByteArray = ByteArray(byteAvailable)
+                        // 입력 스트림에서 바이트 단위로 읽어 옴
+                        inputStream!!.read(bytes)
+                        // 입력 스트림 바이트를 한 바이트씩 읽어 옴
+                        for (i: Int in 1..byteAvailable) {
+                            var tempByte: Byte = bytes[i - 1]
+                            // 개행문자를 기준으로 받음(한줄)
+                            if (tempByte == '\n'.code.toByte()) {
+                                // readBuffer 배열을 encodedBytes로 복사
+                                var encodedBytes: ByteArray = ByteArray(readBufferPosition)
+                                System.arraycopy(
+                                    readBuffer,
+                                    0,
+                                    encodedBytes,
+                                    0,
+                                    encodedBytes.size
+                                )
+                                // 인코딩 된 바이트 배열을 문자열로 변환
+                                var text = String(encodedBytes, Charset.forName("UTF-8"))
+                                readBufferPosition = 0
+                                handler.post(Runnable {
+                                    // 텍스트 뷰에 출력
+                                    // text_data?.append(text + "\n")
+                                    Log.d("Protectok", text)
+                                })
+                            } else {
+                                readBuffer!![readBufferPosition++] = tempByte
+                            }
+                        }
+                    }
+                } catch (e: IOException) {
+                    showMessage(this, e.toString())
+                }
             }
-        } catch (e: IOException) { // 기기와의 연결이 실패할 경우 호출
-            Log.d(TAG, e.message.toString())
-            connectSocket?.close()
-            throw Exception("연결 실패")
+
+            try {
+                // 매 초마다 수신
+                Thread.sleep(1000)
+            } catch (e: InterruptedException) {
+                showMessage(this, e.toString())
+            }
         }
+        workerThread!!.start()
     }
 
-    fun cancel() {
-        try {
-            connectSocket?.close()
-        } catch (e: IOException) {
-            Log.d(TAG, e.message.toString())
-        }
-    }
 }
 
 class RecyclerViewAdapter(private val myDataset: ArrayList<BluetoothDevice>, private val context: MainActivity):
@@ -371,56 +378,4 @@ class RecyclerViewAdapter(private val myDataset: ArrayList<BluetoothDevice>, pri
 //            itemAddress.text = myDataset[position].address
     }
     override fun getItemCount() = myDataset.size
-}
-
-private class ConnectedThread(private val bluetoothSocket: BluetoothSocket,
-                              private val text_data: TextView?
-) : Thread() {
-    private lateinit var inputStream: InputStream
-    private lateinit var outputStream: OutputStream
-
-    init {
-        try {
-            // BluetoothSocket의 InputStream, OutputStream 초기화
-            inputStream = bluetoothSocket.inputStream
-            outputStream = bluetoothSocket.outputStream
-        } catch (e: IOException) {
-            Log.d(TAG, e.message.toString())
-        }
-    }
-
-    override fun run() {
-        val buffer = ByteArray(1024)
-        var bytes: Int
-        Log.d(TAG, "연결 시도")
-
-        while (true) {
-            try {
-                // 데이터 받기(읽기)
-                bytes = inputStream.read(buffer)
-                text_data?.text = buffer.toString()
-//                Log.d(TAG, bytes.toString())
-            } catch (e: Exception) { // 기기와의 연결이 끊기면 호출
-                Log.d(TAG, "기기와의 연결이 끊겼습니다.")
-                break
-            }
-        }
-    }
-
-    fun write(bytes: ByteArray) {
-        try {
-            // 데이터 전송
-            outputStream.write(bytes)
-        } catch (e: IOException) {
-            Log.d(TAG, e.message.toString())
-        }
-    }
-
-    fun cancel() {
-        try {
-            bluetoothSocket.close()
-        } catch (e: IOException) {
-            Log.d(TAG, e.message.toString())
-        }
-    }
 }
